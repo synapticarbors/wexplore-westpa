@@ -1,0 +1,9 @@
+*.pyc
+*.so
+*.swp
+*.swo
+*.h5
+*.c
+*.html
+
+build/
