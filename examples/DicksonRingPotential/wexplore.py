@@ -1,16 +1,24 @@
 import numpy as np
 import networkx as nx
+import pandas as pd
 import heapq
 
+from westpa.binning.assign import BinMapper
+from westpa.binning._assign import apply_down_argmin_across
 
-class HierarchicalBinSpace(object):
-    def __init__(self, n_regions):
+index_dtype = np.uint16
 
-        # Total number of levels
-        self.n_levels = len(n_regions)
+
+class WExploreBinMapper(BinMapper):
+    def __init__(self, n_regions, d_cut, dfargs=None, dfkwargs=None):
+
+        assert len(n_regions) == len(d_cut)
 
         # Max number of bins per level (list of integers)
         self.n_regions = n_regions
+
+        # Distance cut-off for each level
+        self.d_cut = d_cut
 
         # List of bin indices for each level
         self.level_indices = [[] for k in xrange(self.n_levels)]
@@ -20,6 +28,10 @@ class HierarchicalBinSpace(object):
         self.bin_graph = nx.DiGraph()
 
         self.next_bin_index = 0
+
+        self.dfargs = dfargs or ()
+        self.dfkwargs = dfkwargs or {}
+        
 
     @property
     def max_nbins(self):
@@ -32,6 +44,83 @@ class HierarchicalBinSpace(object):
         '''Current number of bins in the lowest level of
         the hierarchy'''
         return len(self.level_indices[-1])
+
+    @property
+    def n_levels(self):
+        return len(self.n_regions)
+
+    @property
+    def labels(self):
+        return self.level_indices[-1]
+
+    def dfunc(self):
+        '''User-implemented distance function of the form dfunc(p, centers, *arg, **kwargs) that returns
+        the distance between a test point `p` in the progress coordinate space and each bin center in `centers`.
+        '''
+        raise NotImplementedError
+
+    def fetch_centers(self, nodes):
+        '''Return the coordinates associated with the nodes in self.bin_graph, `nodes`.
+        This method should return a 2-dimensional numpy array with each row
+        representing the bin center of a node. This should be implemented by the user.
+        '''
+        raise NotImplementedError
+
+    def _assign_level(self, coords, centers, mask, output):
+        '''The assign method from a standard VoronoiBinMapper'''
+        if coords.ndim != 2:
+            raise TypeError('coords must be 2-dimensional')
+
+        apply_down_argmin_across(self.dfunc, (centers,) + self.dfargs, 
+                                self.dfkwargs, self.nbins, coords, mask, output)
+
+        return output
+
+    def assign(self, coords, mask=None, output=None):
+        '''Hierarchically assign coordinates to bins'''
+        try:
+            passed_coord_dtype = coords.dtype
+        except AttributeError:
+            coords = np.require(coords, dtype=coord_dtype)
+        else:
+            if passed_coord_dtype != coord_dtype:
+                coords = np.require(coords, dtype=coord_dtype)
+
+        if coords.ndim != 2:
+            raise TypeError('coords must be 2-dimensional')
+        if mask is None:
+            mask = np.ones((len(coords),), dtype=np.bool_)
+        elif len(mask) != len(coords):
+            raise TypeError('mask [shape {}] has different length than coords [shape {}]'.format(mask.shape, coords.shape))
+
+        if output is None:
+            output = np.empty((len(coords),), dtype=index_dtype)
+        elif len(output) != len(coords):
+            raise TypeError('output has different length than coords')
+
+        # Traverse the bin graph
+        node_indices = self.level_indices[0]
+        centers = self.fetch_centers(node_indices)
+        self._assign_level(coords, centers, mask, output)
+
+        for lid in xrange(1, self.n_levels):
+            s = pd.Series(output, copy=False)
+
+            # Groupby assignments at the previous level
+            for cix, grp in s.groupby(s.values, sort=False):
+                # map the 0-based centers index back to a bin index
+                bix = node_indices[cix]
+                successors = self.bin_graph.successors(bix)
+
+                centers = self.fetch_centers(successors)
+                grp_coords = coords.take(grp.index, axis=0)
+                grp_mask = mask.take(grp.index)
+                grp_output = np.empty((grp_coords.shape[0],), dtype=index_dtype)
+                self._assign_level(grp_coords, centers, grp_mask, grp_output)
+
+                output[grp.index] = grp_output
+
+        return output
 
     def add_bin(self, parent, coord_metadata):
         '''Add a bin that subdivides the bin `parent`, where `parent` is a 
@@ -50,14 +139,19 @@ class HierarchicalBinSpace(object):
         '''
 
         level = 0 if parent is None else self.bin_graph.node[parent]['level'] + 1
-        bin_index = self.next_bin_index
 
+        # Attempt to add to a non-existent level
         if level >= self.n_levels:
             return
 
-        if len(self.level_indices[level]) + 1 > self.n_regions[level]:
+        # Check to make sure max number of bins per leaf is not exceeded
+        if level == 0 and len(self.level_indices[0]) + 1 > self.n_regions[0]:
             return
+        elif level > 0:
+            if len(self.bin_graph.successors(parent)) + 1 > self.n_regions[level]:
+                return
 
+        bin_index = self.next_bin_index
         self.level_indices[level].append(bin_index)
         self.bin_graph.add_node(bin_index, 
                 {'coord_metadata': coord_metadata,
@@ -66,7 +160,7 @@ class HierarchicalBinSpace(object):
         self.bin_graph.add_edge(parent, bin_index)
 
         self.next_bin_index += 1
-        self.add_bin(self.bin_graph.node[bin_index], coord_metadata)
+        self.add_bin(bin_index, coord_metadata)
 
     def balance_replicas(self, max_replicas, assignments):
         '''Given a set of assignments to the lowest level bins in the
@@ -103,7 +197,7 @@ class HierarchicalBinSpace(object):
             if li == 0:
                 level_max_replicas = max_replicas
             else:
-                level_max_replicas = sum([G.node[nix]['nreplicas'] for nix in self.level_indices[li - 1])
+                level_max_replicas = sum([G.node[nix]['nreplicas'] for nix in self.level_indices[li - 1]])
 
             pq = [(G.node[nix]['nreplicas'], nix) for nix in nodes if G.node[nix]['nreplicas'] > 0]
             heapq.heapify(pq)
@@ -120,7 +214,7 @@ class HierarchicalBinSpace(object):
                     G.node[nix]['nreplicas'] = nr
             else:
                 bin_map = np.arange(max(self.level_indices[-1]), dtype=np.int)
-                for ci,nix in enumerate(self.level_indices[1])
+                for ci,nix in enumerate(self.level_indices[1]):
                     bin_map[nix] = ci
 
                 for nr, nix in pq:
@@ -134,8 +228,6 @@ class HierarchicalBinSpace(object):
         assert (~((orig_occupied > 0) & (target_count == 0))).all(), 'Populated bin given zero replicas.'
         assert (~((orig_occupied == 0) & (target_count > 0))).all(), 'Unpopulated bin assigned replicas.'
 
-        # Check to make sure an empty bin was not given replicas
-        assert (assignments
         return target_count
 
 
