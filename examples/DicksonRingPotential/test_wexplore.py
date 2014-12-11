@@ -77,6 +77,48 @@ class TestWExploreBinMapper:
         assert len(bin_mapper.level_indices[1]) == 2
         assert len(bin_mapper.level_indices[2]) == 3
 
+    def test_fetch_centers(self):
+        bin_mapper = WEBM([3, 3, 3], [4.0, 2.0, 1.0])
+
+        coords = np.arange(20).reshape((10,2))
+
+        for k in xrange(3):
+            bin_mapper.add_bin(None, coords[k])
+
+        centers = bin_mapper.fetch_centers(bin_mapper.level_indices[0])
+        assert np.allclose(centers, coords[:3,:])
+
+        centers = bin_mapper.fetch_centers([0, 1, 2])
+        assert np.allclose(centers, 
+                np.vstack((coords[0], coords[0], coords[0])))
+
+        centers = bin_mapper.fetch_centers([0])
+        assert np.allclose(centers, coords[0])
+
+    def test_balance_replicas(self):
+        bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
+
+        for k in xrange(2):
+            bin_mapper.add_bin(None, None)
+
+        for node in bin_mapper.level_indices[0]:
+            bin_mapper.add_bin(node, None)
+
+        for node in bin_mapper.level_indices[1]:
+            bin_mapper.add_bin(node, None)
+
+        assignments = np.array([1, 0, 0, 0, 0, 0, 0, 2, 2, 3, 4, 5, 6, 6, 6, 7])
+        target_count = bin_mapper.balance_replicas(16, assignments)
+
+        print target_count
+        assert np.alltrue(target_count == 2*np.ones(16, dtype=np.int))
+
+
+
+
+        
+
+
 
 
 

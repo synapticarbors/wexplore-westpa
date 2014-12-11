@@ -183,7 +183,7 @@ class WExploreBinMapper(BinMapper):
 
         # Accumulate minimum number up the tree
         for top_node in self.level_indices[0]:
-            for nix in nx.algorithms.traversal.dfs_postorder_nodes(H, top_node):
+            for nix in nx.algorithms.traversal.dfs_postorder_nodes(G, top_node):
                 try:
                     pred = G.pred[nix].keys()[0]   # parent node
                     G.node[pred]['nreplicas'] += G.node[nix]['nreplicas']
