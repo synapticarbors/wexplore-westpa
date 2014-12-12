@@ -7,6 +7,7 @@ from westpa.binning.assign import BinMapper
 from westpa.binning._assign import apply_down_argmin_across
 
 index_dtype = np.uint16
+coord_dtype = np.float32
 
 
 class WExploreBinMapper(BinMapper):
@@ -72,9 +73,27 @@ class WExploreBinMapper(BinMapper):
             raise TypeError('coords must be 2-dimensional')
 
         apply_down_argmin_across(self.dfunc, (centers,) + self.dfargs, 
-                                self.dfkwargs, self.nbins, coords, mask, output)
+                                self.dfkwargs, centers.shape[0], coords, mask, output)
 
         return output
+
+    def dump_graph(self):
+        for li, nodes in enumerate(self.level_indices):
+            print 'Level: ', li
+            for nix in nodes:
+                print nix, self.bin_graph.node[nix]
+
+    def _distribute_to_children(self, G, output, coord_indices, node_indices):
+        s = pd.Series(output, copy=False)
+        observed_nodes = []
+        # Groupby assignments at the previous level
+        for cix, grp in s.groupby(s.values, sort=False):
+            # map the 0-based centers index back to a bin index
+            nix = node_indices[cix]
+            observed_nodes.append(nix)
+            G.node[nix]['coord_ix'] = coord_indices[grp.index]
+
+        return observed_nodes
 
     def assign(self, coords, mask=None, output=None):
         '''Hierarchically assign coordinates to bins'''
@@ -98,27 +117,41 @@ class WExploreBinMapper(BinMapper):
         elif len(output) != len(coords):
             raise TypeError('output has different length than coords')
 
+        G = self.bin_graph
+
+        # List of coordinate indices assigned to each node
+        nx.set_node_attributes(G, 'coord_ix', None)
+
         # Traverse the bin graph
         node_indices = self.level_indices[0]
         centers = self.fetch_centers(node_indices)
         self._assign_level(coords, centers, mask, output)
 
+        obs_nodes = self._distribute_to_children(G, output, np.arange(coords.shape[0]), node_indices)
+
         for lid in xrange(1, self.n_levels):
-            s = pd.Series(output, copy=False)
-
-            # Groupby assignments at the previous level
-            for cix, grp in s.groupby(s.values, sort=False):
-                # map the 0-based centers index back to a bin index
-                bix = node_indices[cix]
-                successors = self.bin_graph.successors(bix)
-
+            next_obs_nodes = []
+            for nix in obs_nodes:
+                successors = G.successors(nix)
                 centers = self.fetch_centers(successors)
-                grp_coords = coords.take(grp.index, axis=0)
-                grp_mask = mask.take(grp.index)
+                grp_coord_ix = G.node[nix]['coord_ix']
+                grp_coords = coords.take(grp_coord_ix, axis=0)
+                grp_mask = mask.take(grp_coord_ix)
                 grp_output = np.empty((grp_coords.shape[0],), dtype=index_dtype)
                 self._assign_level(grp_coords, centers, grp_mask, grp_output)
+                _obs_nodes = self._distribute_to_children(G, grp_output, grp_coord_ix, successors)
+                next_obs_nodes.extend(_obs_nodes)
 
-                output[grp.index] = grp_output
+            obs_nodes = next_obs_nodes
+
+        # Transfer assignments into final output
+        bin_map = np.arange(max(self.level_indices[-1]) + 1, dtype=np.int)
+        for ci, nix in enumerate(self.level_indices[-1]):
+            bin_map[nix] = ci
+
+        for nix in obs_nodes:
+            cix = G.node[nix]['coord_ix']
+            output[cix] = bin_map[nix]
 
         return output
 
@@ -206,15 +239,15 @@ class WExploreBinMapper(BinMapper):
 
             while available_replicas:
                 nr = min(available_replicas, pq[1][0] - pq[0][0] + 1)
-                heapq.heapreplace(pq, (pq[0][0] + 1, pq[0][1]))
+                heapq.heapreplace(pq, (pq[0][0] + nr, pq[0][1]))
                 available_replicas -= nr
 
             if li < self.n_levels - 1:
                 for nr, nix in pq:
                     G.node[nix]['nreplicas'] = nr
             else:
-                bin_map = np.arange(max(self.level_indices[-1]), dtype=np.int)
-                for ci,nix in enumerate(self.level_indices[1]):
+                bin_map = np.arange(max(self.level_indices[-1]) + 1, dtype=np.int)
+                for ci, nix in enumerate(self.level_indices[-1]):
                     bin_map[nix] = ci
 
                 for nr, nix in pq:

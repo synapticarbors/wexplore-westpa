@@ -110,15 +110,25 @@ class TestWExploreBinMapper:
         assignments = np.array([1, 0, 0, 0, 0, 0, 0, 2, 2, 3, 4, 5, 6, 6, 6, 7])
         target_count = bin_mapper.balance_replicas(16, assignments)
 
-        print target_count
-        assert np.alltrue(target_count == 2*np.ones(16, dtype=np.int))
+        assert (target_count == 2*np.ones(8, dtype=np.int)).all()
 
+    def test_assign_1D(self):
+        bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
 
+        bin_mapper.add_bin(None, [-1.0])
+        bin_mapper.add_bin(None, [1.0])
 
+        for node in bin_mapper.level_indices[0]:
+            if bin_mapper.bin_graph.node[node]['coord_metadata'][0] > 0:
+                bin_mapper.add_bin(node, [2.0])
+            else:
+                bin_mapper.add_bin(node, [-2.0])
 
-        
+        for nix in [1, 4, 6, 8]:
+            bin_mapper.add_bin(nix, [10.0])
 
-
-
-
-
+        pcoords = np.array([[-1.0], [1.0], [2.0], 
+                            [-2.0], [10.0], [-10.0], 
+                            [3.0], [-3.0]], np.float32)
+        assign = bin_mapper.assign(pcoords)
+        assert list(assign) == [0, 1, 3, 2, 7, 2, 3, 2]
