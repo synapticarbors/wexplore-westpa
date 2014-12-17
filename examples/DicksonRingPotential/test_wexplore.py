@@ -132,3 +132,6 @@ class TestWExploreBinMapper:
                             [3.0], [-3.0]], np.float32)
         assign = bin_mapper.assign(pcoords)
         assert list(assign) == [0, 1, 3, 2, 7, 2, 3, 2]
+
+        assign = bin_mapper.assign(pcoords)
+        assert list(assign) == [0, 1, 3, 2, 7, 2, 3, 2]

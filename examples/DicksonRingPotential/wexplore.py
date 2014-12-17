@@ -2,6 +2,7 @@ import numpy as np
 import networkx as nx
 import pandas as pd
 import heapq
+import cPickle as pickle
 
 from westpa.binning.assign import BinMapper
 from westpa.binning._assign import apply_down_argmin_across
@@ -32,6 +33,12 @@ class WExploreBinMapper(BinMapper):
 
         self.dfargs = dfargs or ()
         self.dfkwargs = dfkwargs or {}
+
+        # Variables to cache assignment calculation
+        self.last_coords = None
+        self.last_mask = None
+        self.last_assignment = None
+        self.last_graph = pickle.dumps(self.bin_graph, -1)
         
 
     @property
@@ -119,6 +126,11 @@ class WExploreBinMapper(BinMapper):
 
         G = self.bin_graph
 
+        # Check if we can return cached assigments instead of recalculating
+        if self.last_graph == pickle.dumps(G, -1) and np.array_equal(coords, self.last_coords) and np.array_equal(mask, self.last_mask):
+            print 'Assign using cached assignments'
+            return self.last_assignment
+
         # List of coordinate indices assigned to each node
         nx.set_node_attributes(G, 'coord_ix', None)
 
@@ -152,6 +164,11 @@ class WExploreBinMapper(BinMapper):
         for nix in obs_nodes:
             cix = G.node[nix]['coord_ix']
             output[cix] = bin_map[nix]
+
+        self.last_coords = coords
+        self.last_mask = mask
+        self.last_assignment = output
+        self.last_graph = pickle.dumps(self.bin_graph, -1)
 
         return output
 
