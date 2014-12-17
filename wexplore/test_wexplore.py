@@ -20,19 +20,6 @@ class WEBM(WExploreBinMapper):
 
         return distmat[0,:]
 
-    def fetch_centers(self, nodes):
-        centers = []
-        for nix in nodes:
-            centers.append(self.bin_graph.node[nix]['coord_metadata'])
-
-        centers = np.asarray(centers, dtype=coord_dtype)
-        if centers.ndim < 2:
-            new_centers = np.empty((1,centers.shape[0]), dtype=coord_dtype)
-            new_centers[0,:] = centers[:]
-            centers = new_centers
-
-        return centers
-
 
 class TestWExploreBinMapper:
 
@@ -82,8 +69,10 @@ class TestWExploreBinMapper:
 
         coords = np.arange(20).reshape((10,2))
 
+        bin_mapper.centers = coords[:3]
+
         for k in xrange(3):
-            bin_mapper.add_bin(None, coords[k])
+            bin_mapper.add_bin(None, k)
 
         centers = bin_mapper.fetch_centers(bin_mapper.level_indices[0])
         assert np.allclose(centers, coords[:3,:])
@@ -114,18 +103,20 @@ class TestWExploreBinMapper:
 
     def test_assign_1D(self):
         bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
+        bin_mapper.centers = [[-1.0], [1.0], [-2.0], [2.0], [10.0]]
 
-        bin_mapper.add_bin(None, [-1.0])
-        bin_mapper.add_bin(None, [1.0])
+        bin_mapper.add_bin(None, 0)
+        bin_mapper.add_bin(None, 1)
 
         for node in bin_mapper.level_indices[0]:
-            if bin_mapper.bin_graph.node[node]['coord_metadata'][0] > 0:
-                bin_mapper.add_bin(node, [2.0])
+            cix = bin_mapper.bin_graph.node[node]['center_ix']
+            if bin_mapper.centers[cix][0] > 0:
+                bin_mapper.add_bin(node, 3)
             else:
-                bin_mapper.add_bin(node, [-2.0])
+                bin_mapper.add_bin(node, 2)
 
         for nix in [1, 4, 6, 8]:
-            bin_mapper.add_bin(nix, [10.0])
+            bin_mapper.add_bin(nix, 4)
 
         pcoords = np.array([[-1.0], [1.0], [2.0], 
                             [-2.0], [10.0], [-10.0], 
@@ -135,3 +126,17 @@ class TestWExploreBinMapper:
 
         assign = bin_mapper.assign(pcoords)
         assert list(assign) == [0, 1, 3, 2, 7, 2, 3, 2]
+
+    def test_add_bin_distance(self):
+        bin_mapper = WEBM([2, 2], [4.0, 2.0])
+        bin_mapper.centers = [[0.0]]
+        bin_mapper.add_bin(None, 0)
+
+        pcoords = np.array([[0.0], [4.1], [5.1]], np.float32)
+        assign = bin_mapper.assign(pcoords, add_bins=True)
+        assert list(assign) == [0, 0, 0]
+
+        assign = bin_mapper.assign(pcoords)
+        assert list(assign) == [0, 1, 1]
+
+        print bin_mapper.dump_graph()

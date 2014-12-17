@@ -3,9 +3,10 @@ import networkx as nx
 import pandas as pd
 import heapq
 import cPickle as pickle
+import hashlib
 
 from westpa.binning.assign import BinMapper
-from westpa.binning._assign import apply_down_argmin_across
+from wex_utils import apply_down_argmin_across
 
 index_dtype = np.uint16
 coord_dtype = np.float32
@@ -21,6 +22,9 @@ class WExploreBinMapper(BinMapper):
 
         # Distance cut-off for each level
         self.d_cut = d_cut
+
+        # bin centers. Note: this does not directly map to node ids
+        self.centers = []
 
         # List of bin indices for each level
         self.level_indices = [[] for k in xrange(self.n_levels)]
@@ -39,7 +43,6 @@ class WExploreBinMapper(BinMapper):
         self.last_mask = None
         self.last_assignment = None
         self.last_graph = pickle.dumps(self.bin_graph, -1)
-        
 
     @property
     def max_nbins(self):
@@ -69,22 +72,34 @@ class WExploreBinMapper(BinMapper):
 
     def fetch_centers(self, nodes):
         '''Return the coordinates associated with the nodes in self.bin_graph, `nodes`.
-        This method should return a 2-dimensional numpy array with each row
-        representing the bin center of a node. This should be implemented by the user.
+        This method returns a 2-dimensional numpy array with each row
+        representing the bin center of a node. 
         '''
-        raise NotImplementedError
+        centers = []
+        for nix in nodes:
+            cix = self.bin_graph.node[nix]['center_ix']
+            centers.append(self.centers[cix])
 
-    def _assign_level(self, coords, centers, mask, output):
+        centers = np.asarray(centers, dtype=coord_dtype)
+        if centers.ndim < 2:
+            new_centers = np.empty((1,centers.shape[0]), dtype=coord_dtype)
+            new_centers[0,:] = centers[:]
+            centers = new_centers
+
+        return centers
+
+    def _assign_level(self, coords, centers, mask, output, max_dist):
         '''The assign method from a standard VoronoiBinMapper'''
         if coords.ndim != 2:
             raise TypeError('coords must be 2-dimensional')
 
         apply_down_argmin_across(self.dfunc, (centers,) + self.dfargs, 
-                                self.dfkwargs, centers.shape[0], coords, mask, output)
+                                self.dfkwargs, centers.shape[0], coords, mask, output, max_dist)
 
         return output
 
     def dump_graph(self):
+        print ''
         for li, nodes in enumerate(self.level_indices):
             print 'Level: ', li
             for nix in nodes:
@@ -102,7 +117,7 @@ class WExploreBinMapper(BinMapper):
 
         return observed_nodes
 
-    def assign(self, coords, mask=None, output=None):
+    def assign(self, coords, mask=None, output=None, add_bins=False):
         '''Hierarchically assign coordinates to bins'''
         try:
             passed_coord_dtype = coords.dtype
@@ -124,12 +139,23 @@ class WExploreBinMapper(BinMapper):
         elif len(output) != len(coords):
             raise TypeError('output has different length than coords')
 
+        max_dist = np.empty((len(coords),), dtype=coord_dtype)
+
         G = self.bin_graph
+        graph_hash = hashlib.sha256(pickle.dumps(G, -1)).hexdigest()
 
         # Check if we can return cached assigments instead of recalculating
-        if self.last_graph == pickle.dumps(G, -1) and np.array_equal(coords, self.last_coords) and np.array_equal(mask, self.last_mask):
+        if self.last_graph == graph_hash and np.array_equal(coords, self.last_coords) and np.array_equal(mask, self.last_mask):
             print 'Assign using cached assignments'
             return self.last_assignment
+
+
+        # List of new bins to potentially add at end of the routine.
+        new_bins = []
+
+        # List of coord indices used to create new bins. This avoids adding
+        # A bin originating from the same coord_ix more than once.
+        new_bin_coord_ix = []
 
         # List of coordinate indices assigned to each node
         nx.set_node_attributes(G, 'coord_ix', None)
@@ -137,9 +163,15 @@ class WExploreBinMapper(BinMapper):
         # Traverse the bin graph
         node_indices = self.level_indices[0]
         centers = self.fetch_centers(node_indices)
-        self._assign_level(coords, centers, mask, output)
+        self._assign_level(coords, centers, mask, output, max_dist)
 
         obs_nodes = self._distribute_to_children(G, output, np.arange(coords.shape[0]), node_indices)
+
+        if add_bins:
+            coord_ix = np.argmax(max_dist)
+            if max_dist[coord_ix] > self.d_cut[0] and coord_ix not in new_bin_coord_ix:
+                new_bins.append((0, None, coord_ix))
+                new_bin_coord_ix.append(coord_ix)
 
         for lid in xrange(1, self.n_levels):
             next_obs_nodes = []
@@ -150,9 +182,17 @@ class WExploreBinMapper(BinMapper):
                 grp_coords = coords.take(grp_coord_ix, axis=0)
                 grp_mask = mask.take(grp_coord_ix)
                 grp_output = np.empty((grp_coords.shape[0],), dtype=index_dtype)
-                self._assign_level(grp_coords, centers, grp_mask, grp_output)
+                grp_max_dist = np.empty((grp_coords.shape[0],), dtype=coord_dtype)
+                self._assign_level(grp_coords, centers, grp_mask, grp_output, grp_max_dist)
                 _obs_nodes = self._distribute_to_children(G, grp_output, grp_coord_ix, successors)
                 next_obs_nodes.extend(_obs_nodes)
+
+                if add_bins:
+                    md_ix = np.argmax(grp_max_dist)
+                    coord_ix = grp_coord_ix[md_ix]
+                    if grp_max_dist[md_ix] > self.d_cut[lid] and coord_ix not in new_bin_coord_ix:
+                        new_bins.append((lid, nix, coord_ix))
+                        new_bin_coord_ix.append(coord_ix)
 
             obs_nodes = next_obs_nodes
 
@@ -168,22 +208,25 @@ class WExploreBinMapper(BinMapper):
         self.last_coords = coords
         self.last_mask = mask
         self.last_assignment = output
-        self.last_graph = pickle.dumps(self.bin_graph, -1)
+        self.last_graph = hashlib.sha256(pickle.dumps(self.bin_graph, -1)).hexdigest()
+
+        if add_bins:
+            for new_bin in new_bins:
+                # Add coords to centers
+                self.centers.append(coords[new_bin[2]])
+                cix = len(self.centers) - 1
+                self.add_bin(new_bin[1], cix)
 
         return output
 
-    def add_bin(self, parent, coord_metadata):
+    def add_bin(self, parent, center_ix):
         '''Add a bin that subdivides the bin `parent`, where `parent` is a 
         networkx Node. 
         If `parent`is None, then it is assumed that this bin is at the top of the bin
-        hiearchy. The `coord_metadata` argument defines an association of 
-        coordinate data with the bin. It can be an array defining the bin, 
-        an index in another array that contains all of the coordinate data, a 
-        path to a file containing the coordinates for the bin center, etc. The 
-        method that assigns a test pcoord to a bin is responsible for accessing 
-        that data and is defined by the user.
+        hiearchy. The `center_ix` argument defines an association of 
+        coordinate data with the bin. 
 
-        A bin with the same `coord_metadat`a, but a unique bin index will
+        A bin with the same `center_ix`, but a unique bin index will
         be recursively added to all levels below the parent, `parent` in 
         the hiearchy. 
         '''
@@ -204,13 +247,13 @@ class WExploreBinMapper(BinMapper):
         bin_index = self.next_bin_index
         self.level_indices[level].append(bin_index)
         self.bin_graph.add_node(bin_index, 
-                {'coord_metadata': coord_metadata,
+                {'center_ix': center_ix,
                  'level': level})
 
         self.bin_graph.add_edge(parent, bin_index)
 
         self.next_bin_index += 1
-        self.add_bin(bin_index, coord_metadata)
+        self.add_bin(bin_index, center_ix)
 
     def balance_replicas(self, max_replicas, assignments):
         '''Given a set of assignments to the lowest level bins in the
