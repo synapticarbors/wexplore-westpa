@@ -42,7 +42,7 @@ class WExploreBinMapper(BinMapper):
         self.last_coords = None
         self.last_mask = None
         self.last_assignment = None
-        self.last_graph = pickle.dumps(self.bin_graph, -1)
+        self.last_graph = self._hash(self.bin_graph)
 
     @property
     def max_nbins(self):
@@ -63,6 +63,11 @@ class WExploreBinMapper(BinMapper):
     @property
     def labels(self):
         return self.level_indices[-1]
+
+    def _hash(self, obj):
+        '''Return the hash digest of the object, `obj`'''
+        pkldat = pickle.dumps(obj, pickle.HIGHEST_PROTOCOL)
+        return self.hashfunc(pkldat).hexdigest()
 
     def dfunc(self):
         '''User-implemented distance function of the form dfunc(p, centers, *arg, **kwargs) that returns
@@ -142,11 +147,10 @@ class WExploreBinMapper(BinMapper):
         max_dist = np.empty((len(coords),), dtype=coord_dtype)
 
         G = self.bin_graph
-        graph_hash = hashlib.sha256(pickle.dumps(G, -1)).hexdigest()
+        graph_hash = self._hash(G)
 
         # Check if we can return cached assigments instead of recalculating
         if self.last_graph == graph_hash and np.array_equal(coords, self.last_coords) and np.array_equal(mask, self.last_mask):
-            print 'Assign using cached assignments'
             return self.last_assignment
 
 
@@ -169,9 +173,8 @@ class WExploreBinMapper(BinMapper):
 
         if add_bins:
             coord_ix = np.argmax(max_dist)
-            if max_dist[coord_ix] > self.d_cut[0] and coord_ix not in new_bin_coord_ix:
+            if max_dist[coord_ix] > self.d_cut[0]:
                 new_bins.append((0, None, coord_ix))
-                new_bin_coord_ix.append(coord_ix)
 
         for lid in xrange(1, self.n_levels):
             next_obs_nodes = []
@@ -190,9 +193,8 @@ class WExploreBinMapper(BinMapper):
                 if add_bins:
                     md_ix = np.argmax(grp_max_dist)
                     coord_ix = grp_coord_ix[md_ix]
-                    if grp_max_dist[md_ix] > self.d_cut[lid] and coord_ix not in new_bin_coord_ix:
+                    if grp_max_dist[md_ix] > self.d_cut[lid]:
                         new_bins.append((lid, nix, coord_ix))
-                        new_bin_coord_ix.append(coord_ix)
 
             obs_nodes = next_obs_nodes
 
@@ -208,14 +210,22 @@ class WExploreBinMapper(BinMapper):
         self.last_coords = coords
         self.last_mask = mask
         self.last_assignment = output
-        self.last_graph = hashlib.sha256(pickle.dumps(self.bin_graph, -1)).hexdigest()
+        self.last_graph = self._hash(self.bin_graph)
 
         if add_bins:
+            total_bins = self.nbins
             for new_bin in new_bins:
-                # Add coords to centers
-                self.centers.append(coords[new_bin[2]])
-                cix = len(self.centers) - 1
-                self.add_bin(new_bin[1], cix)
+                coord_ix = new_bin[2]
+                if coord_ix not in new_bin_coord_ix:
+                    # Attempt to add new bin
+                    cix = len(self.centers)
+                    self.add_bin(new_bin[1], cix)
+
+                    if self.nbins > total_bins:
+                        # Add coords to centers
+                        self.centers.append(coords[coord_ix])
+                        total_bins = self.nbins
+                        new_bin_coord_ix.append(coord_ix)
 
         return output
 

@@ -128,15 +128,33 @@ class TestWExploreBinMapper:
         assert list(assign) == [0, 1, 3, 2, 7, 2, 3, 2]
 
     def test_add_bin_distance(self):
-        bin_mapper = WEBM([2, 2], [4.0, 2.0])
+        bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
         bin_mapper.centers = [[0.0]]
         bin_mapper.add_bin(None, 0)
 
         pcoords = np.array([[0.0], [4.1], [5.1]], np.float32)
         assign = bin_mapper.assign(pcoords, add_bins=True)
         assert list(assign) == [0, 0, 0]
+        assert bin_mapper.nbins == 2
 
         assign = bin_mapper.assign(pcoords)
         assert list(assign) == [0, 1, 1]
 
-        print bin_mapper.dump_graph()
+        #---------
+        pcoords = np.array([[0.0], [0.9], [9.5]], np.float32)
+        assign = bin_mapper.assign(pcoords, add_bins=True)
+        assert list(assign) == [0, 0, 1]
+        assert bin_mapper.nbins == 3
+
+        assign = bin_mapper.assign(pcoords)
+        assert list(assign) == [0, 0, 2]
+
+        #---------
+        pcoords = np.array([[1.2], [10.6]], np.float32)
+        assign = bin_mapper.assign(pcoords, add_bins=True)
+        assert list(assign) == [0, 2]
+        assert bin_mapper.nbins == 5
+
+        assign = bin_mapper.assign(pcoords)
+        assert list(assign) == [3, 4]
+
