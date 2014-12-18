@@ -5,5 +5,10 @@
 *.h5
 *.c
 *.html
+*.log
 
+.ipynb_checkpoints/
 build/
+examples/DicksonRingPotential/wexplore.py
+examples/DicksonRingPotential/wex_plugin.py
+

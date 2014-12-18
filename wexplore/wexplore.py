@@ -4,6 +4,7 @@ import pandas as pd
 import heapq
 import cPickle as pickle
 import hashlib
+import logging
 
 from westpa.binning.assign import BinMapper
 from wex_utils import apply_down_argmin_across
@@ -11,9 +12,10 @@ from wex_utils import apply_down_argmin_across
 index_dtype = np.uint16
 coord_dtype = np.float32
 
+log = logging.getLogger(__name__)
 
 class WExploreBinMapper(BinMapper):
-    def __init__(self, n_regions, d_cut, dfargs=None, dfkwargs=None):
+    def __init__(self, n_regions, d_cut, dfunc, dfargs=None, dfkwargs=None):
 
         assert len(n_regions) == len(d_cut)
 
@@ -35,6 +37,7 @@ class WExploreBinMapper(BinMapper):
 
         self.next_bin_index = 0
 
+        self.dfunc = dfunc
         self.dfargs = dfargs or ()
         self.dfkwargs = dfkwargs or {}
 
@@ -69,12 +72,6 @@ class WExploreBinMapper(BinMapper):
         pkldat = pickle.dumps(obj, pickle.HIGHEST_PROTOCOL)
         return self.hashfunc(pkldat).hexdigest()
 
-    def dfunc(self):
-        '''User-implemented distance function of the form dfunc(p, centers, *arg, **kwargs) that returns
-        the distance between a test point `p` in the progress coordinate space and each bin center in `centers`.
-        '''
-        raise NotImplementedError
-
     def fetch_centers(self, nodes):
         '''Return the coordinates associated with the nodes in self.bin_graph, `nodes`.
         This method returns a 2-dimensional numpy array with each row
@@ -93,13 +90,13 @@ class WExploreBinMapper(BinMapper):
 
         return centers
 
-    def _assign_level(self, coords, centers, mask, output, max_dist):
+    def _assign_level(self, coords, centers, mask, output, min_dist):
         '''The assign method from a standard VoronoiBinMapper'''
         if coords.ndim != 2:
             raise TypeError('coords must be 2-dimensional')
 
         apply_down_argmin_across(self.dfunc, (centers,) + self.dfargs, 
-                                self.dfkwargs, centers.shape[0], coords, mask, output, max_dist)
+                                self.dfkwargs, centers.shape[0], coords, mask, output, min_dist)
 
         return output
 
@@ -144,13 +141,14 @@ class WExploreBinMapper(BinMapper):
         elif len(output) != len(coords):
             raise TypeError('output has different length than coords')
 
-        max_dist = np.empty((len(coords),), dtype=coord_dtype)
+        min_dist = np.empty((len(coords),), dtype=coord_dtype)
 
         G = self.bin_graph
         graph_hash = self._hash(G)
 
         # Check if we can return cached assigments instead of recalculating
         if self.last_graph == graph_hash and np.array_equal(coords, self.last_coords) and np.array_equal(mask, self.last_mask):
+            log.debug('assign() using cached assigments')
             return self.last_assignment
 
 
@@ -167,13 +165,14 @@ class WExploreBinMapper(BinMapper):
         # Traverse the bin graph
         node_indices = self.level_indices[0]
         centers = self.fetch_centers(node_indices)
-        self._assign_level(coords, centers, mask, output, max_dist)
+        self._assign_level(coords, centers, mask, output, min_dist)
 
         obs_nodes = self._distribute_to_children(G, output, np.arange(coords.shape[0]), node_indices)
 
         if add_bins:
-            coord_ix = np.argmax(max_dist)
-            if max_dist[coord_ix] > self.d_cut[0]:
+            coord_ix = np.argmax(min_dist)
+
+            if min_dist[coord_ix] > self.d_cut[0]:
                 new_bins.append((0, None, coord_ix))
 
         for lid in xrange(1, self.n_levels):
@@ -185,15 +184,15 @@ class WExploreBinMapper(BinMapper):
                 grp_coords = coords.take(grp_coord_ix, axis=0)
                 grp_mask = mask.take(grp_coord_ix)
                 grp_output = np.empty((grp_coords.shape[0],), dtype=index_dtype)
-                grp_max_dist = np.empty((grp_coords.shape[0],), dtype=coord_dtype)
-                self._assign_level(grp_coords, centers, grp_mask, grp_output, grp_max_dist)
+                grp_min_dist = np.empty((grp_coords.shape[0],), dtype=coord_dtype)
+                self._assign_level(grp_coords, centers, grp_mask, grp_output, grp_min_dist)
                 _obs_nodes = self._distribute_to_children(G, grp_output, grp_coord_ix, successors)
                 next_obs_nodes.extend(_obs_nodes)
 
                 if add_bins:
-                    md_ix = np.argmax(grp_max_dist)
+                    md_ix = np.argmax(grp_min_dist)
                     coord_ix = grp_coord_ix[md_ix]
-                    if grp_max_dist[md_ix] > self.d_cut[lid]:
+                    if grp_min_dist[md_ix] > self.d_cut[lid]:
                         new_bins.append((lid, nix, coord_ix))
 
             obs_nodes = next_obs_nodes
@@ -308,7 +307,11 @@ class WExploreBinMapper(BinMapper):
             available_replicas = level_max_replicas - sum(p[0] for p in pq)
 
             while available_replicas:
-                nr = min(available_replicas, pq[1][0] - pq[0][0] + 1)
+                if len(pq) == 1:
+                    nr = available_replicas
+                else:
+                    nr = min(available_replicas, pq[1][0] - pq[0][0] + 1)
+
                 heapq.heapreplace(pq, (pq[0][0] + nr, pq[0][1]))
                 available_replicas -= nr
 

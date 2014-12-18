@@ -35,8 +35,18 @@ DEF xi = 1.5
 DEF dt = 0.05
 DEF beta = 1.0
 
+def dfunc(f4[:] p, f4[:,::1] centers):
+    cdef unsigned int k
+    cdef int ncenters = centers.shape[0]
+    cdef np.ndarray[f4, ndim=1] d = np.empty((ncenters,), dtype=np.float32)
 
-cdef void propagate(f8[:,::1] coord, i8 nsteps):
+    for k in xrange(ncenters):
+        d[k] = sqrt((p[0] - centers[k,0])**2 + (p[1] - centers[k,1])**2)
+
+    return d
+
+
+cdef void propagate(f4[:,::1] coord, i8 nsteps):
     cdef:
         unsigned int k
         double x, y, r, invr, fx, fy

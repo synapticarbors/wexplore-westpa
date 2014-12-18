@@ -10,28 +10,27 @@ from wexplore import WExploreBinMapper
 coord_dtype = np.float32
 
 
-class WEBM(WExploreBinMapper):
-    def dfunc(self, coordvec, centers):
-        if coordvec.ndim < 2:
-            new_coordvec = np.empty((1,coordvec.shape[0]), dtype=coord_dtype)
-            new_coordvec[0,:] = coordvec[:]
-            coordvec = new_coordvec 
-        distmat = np.require(cdist(coordvec, centers), dtype=coord_dtype)
+def dfunc(coordvec, centers):
+    if coordvec.ndim < 2:
+        new_coordvec = np.empty((1,coordvec.shape[0]), dtype=coord_dtype)
+        new_coordvec[0,:] = coordvec[:]
+        coordvec = new_coordvec 
+    distmat = np.require(cdist(coordvec, centers), dtype=coord_dtype)
 
-        return distmat[0,:]
+    return distmat[0,:]
 
 
 class TestWExploreBinMapper:
 
     def test_create_mapper(self):
-        bin_mapper = WEBM([2, 3, 3], [4.0, 2.0, 1.0])
+        bin_mapper = WExploreBinMapper([2, 3, 3], [4.0, 2.0, 1.0], dfunc)
 
         assert bin_mapper.n_levels == 3
         assert bin_mapper.nbins == 0
         assert bin_mapper.max_nbins == 18
 
     def test_add_bin(self):
-        bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
+        bin_mapper = WExploreBinMapper([2, 2, 2], [4.0, 2.0, 1.0], dfunc)
 
         bin_mapper.add_bin(None, [0.0, 0.0])
 
@@ -65,7 +64,7 @@ class TestWExploreBinMapper:
         assert len(bin_mapper.level_indices[2]) == 3
 
     def test_fetch_centers(self):
-        bin_mapper = WEBM([3, 3, 3], [4.0, 2.0, 1.0])
+        bin_mapper = WExploreBinMapper([3, 3, 3], [4.0, 2.0, 1.0], dfunc)
 
         coords = np.arange(20).reshape((10,2))
 
@@ -85,7 +84,7 @@ class TestWExploreBinMapper:
         assert np.allclose(centers, coords[0])
 
     def test_balance_replicas(self):
-        bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
+        bin_mapper = WExploreBinMapper([2, 2, 2], [4.0, 2.0, 1.0], dfunc)
 
         for k in xrange(2):
             bin_mapper.add_bin(None, None)
@@ -102,7 +101,7 @@ class TestWExploreBinMapper:
         assert (target_count == 2*np.ones(8, dtype=np.int)).all()
 
     def test_assign_1D(self):
-        bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
+        bin_mapper = WExploreBinMapper([2, 2, 2], [4.0, 2.0, 1.0], dfunc)
         bin_mapper.centers = [[-1.0], [1.0], [-2.0], [2.0], [10.0]]
 
         bin_mapper.add_bin(None, 0)
@@ -128,7 +127,7 @@ class TestWExploreBinMapper:
         assert list(assign) == [0, 1, 3, 2, 7, 2, 3, 2]
 
     def test_add_bin_distance(self):
-        bin_mapper = WEBM([2, 2, 2], [4.0, 2.0, 1.0])
+        bin_mapper = WExploreBinMapper([2, 2, 2], [4.0, 2.0, 1.0], dfunc)
         bin_mapper.centers = [[0.0]]
         bin_mapper.add_bin(None, 0)
 

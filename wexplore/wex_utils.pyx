@@ -20,12 +20,12 @@ cpdef apply_down_argmin_across(func,
                                numpy.ndarray[coord_t, ndim=2] coords,
                                numpy.ndarray[bool_t, ndim=1, cast=True] mask,
                                index_t[:] output,
-                               coord_t[:] max_dist):
+                               coord_t[:] min_dist):
     '''Apply func(coord, *args, **kwargs) to each input coordinate tuple,
     skipping any for which mask is false and writing results to output.'''
     cdef:
         Py_ssize_t icoord, iout, ncoord, nout,
-        coord_t _min, _max
+        coord_t _min
         index_t _argmin
         numpy.ndarray[coord_t, ndim=1] func_output
     
@@ -42,16 +42,12 @@ cpdef apply_down_argmin_across(func,
 
             # find minimum and maximum values
             _min = func_output[0]
-            _max = func_output[0]
             _argmin = 0
             for iout from 1 <= iout < nout:
                 if func_output[iout] < _min:
                     _min = func_output[iout]
                     _argmin = iout
 
-                if func_output[iout] > _max:
-                    _max = func_output[iout]
-
             output[icoord] = _argmin
-            max_dist[icoord] = _max
+            min_dist[icoord] = _min
 

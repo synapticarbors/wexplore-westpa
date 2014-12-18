@@ -52,16 +52,18 @@ class System(WESTSystem):
         self.pcoord_dtype = pcoord_dtype
 
         # Set up hierarchical bin space
-        self.hbs = wexplore.HierarchicalBinSpace(nregions=[5, 5, 5])
+        self.bin_mapper = wexplore.WExploreBinMapper(n_regions=[4, 4, 4],
+                d_cut=[4.1, 2, 0.5], dfunc=modelsim.dfunc)
+        
 
         # Array to hold bin centers
-        self.bin_centers = [[-3.0, 0.0]]
-        self.hbs.add_bin(None, 0)
+        self.bin_mapper.centers = [[-3.0, 0.0]]
+        self.bin_mapper.add_bin(None, 0)
 
-        self.max_replicas = 100
-        self.bin_target_counts = self.hbs.balance_replicas(self.max_replicas,
-                np.array([2,], np.int_))
+        # Need to define the max number of replicas
+        self.max_replicas = 640
+        self.bin_target_counts = self.bin_mapper.balance_replicas(self.max_replicas,
+                np.array([0,], np.int_))
 
-        self.bin_mapper = FuncBinMapper(wexplor, 1, 
 
 
