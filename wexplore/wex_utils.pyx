@@ -51,3 +51,23 @@ cpdef apply_down_argmin_across(func,
             output[icoord] = _argmin
             min_dist[icoord] = _min
 
+cpdef argmin_exceed_threshold(coord_t[:] x, double threshold):
+    '''Return the index of the value that exceeds the threshold by the minimum amount'''
+    cdef:
+        Py_ssize_t ix, _argmin
+        coord_t _min, z
+
+    _min = 9999999.0
+    _argmin = -1
+    for ix in xrange(x.shape[0]):
+        z = x[ix]
+
+        if z > threshold and z < _min:
+            _min = z
+            _argmin = ix
+
+    return _argmin
+
+
+
+

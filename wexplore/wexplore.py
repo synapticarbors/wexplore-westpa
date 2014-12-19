@@ -7,7 +7,7 @@ import hashlib
 import logging
 
 from westpa.binning.assign import BinMapper
-from wex_utils import apply_down_argmin_across
+from wex_utils import apply_down_argmin_across, argmin_exceed_threshold
 
 index_dtype = np.uint16
 coord_dtype = np.float32
@@ -144,6 +144,7 @@ class WExploreBinMapper(BinMapper):
         min_dist = np.empty((len(coords),), dtype=coord_dtype)
 
         G = self.bin_graph
+
         graph_hash = self._hash(G)
 
         # Check if we can return cached assigments instead of recalculating
@@ -151,6 +152,8 @@ class WExploreBinMapper(BinMapper):
             log.debug('assign() using cached assigments')
             return self.last_assignment
 
+        # List of coordinate indices assigned to each node
+        nx.set_node_attributes(G, 'coord_ix', None)
 
         # List of new bins to potentially add at end of the routine.
         new_bins = []
@@ -158,9 +161,6 @@ class WExploreBinMapper(BinMapper):
         # List of coord indices used to create new bins. This avoids adding
         # A bin originating from the same coord_ix more than once.
         new_bin_coord_ix = []
-
-        # List of coordinate indices assigned to each node
-        nx.set_node_attributes(G, 'coord_ix', None)
 
         # Traverse the bin graph
         node_indices = self.level_indices[0]
@@ -170,9 +170,9 @@ class WExploreBinMapper(BinMapper):
         obs_nodes = self._distribute_to_children(G, output, np.arange(coords.shape[0]), node_indices)
 
         if add_bins:
-            coord_ix = np.argmax(min_dist)
-
-            if min_dist[coord_ix] > self.d_cut[0]:
+            # Get the position that exceeds the threshold by the smallest amount
+            coord_ix = argmin_exceed_threshold(min_dist, self.d_cut[0])
+            if coord_ix >= 0:
                 new_bins.append((0, None, coord_ix))
 
         for lid in xrange(1, self.n_levels):
@@ -190,9 +190,9 @@ class WExploreBinMapper(BinMapper):
                 next_obs_nodes.extend(_obs_nodes)
 
                 if add_bins:
-                    md_ix = np.argmax(grp_min_dist)
-                    coord_ix = grp_coord_ix[md_ix]
-                    if grp_min_dist[md_ix] > self.d_cut[lid]:
+                    md_ix = argmin_exceed_threshold(grp_min_dist, self.d_cut[lid])
+                    if md_ix >= 0:
+                        coord_ix = grp_coord_ix[md_ix]
                         new_bins.append((lid, nix, coord_ix))
 
             obs_nodes = next_obs_nodes
@@ -206,6 +206,8 @@ class WExploreBinMapper(BinMapper):
             cix = G.node[nix]['coord_ix']
             output[cix] = bin_map[nix]
 
+        #nx.set_node_attributes(G, 'coord_ix', None)
+
         self.last_coords = coords
         self.last_mask = mask
         self.last_assignment = output
@@ -214,11 +216,18 @@ class WExploreBinMapper(BinMapper):
         if add_bins:
             total_bins = self.nbins
             for new_bin in new_bins:
+                parent_ix = new_bin[1]
                 coord_ix = new_bin[2]
+
+                # Check to make sure a previously adding a bin
+                # in this round does not violate a distance constraint
+                if not self.check_distance(parent_ix, coords[coord_ix]):
+                    continue
+
                 if coord_ix not in new_bin_coord_ix:
                     # Attempt to add new bin
                     cix = len(self.centers)
-                    self.add_bin(new_bin[1], cix)
+                    self.add_bin(parent_ix, cix)
 
                     if self.nbins > total_bins:
                         # Add coords to centers
@@ -226,11 +235,60 @@ class WExploreBinMapper(BinMapper):
                         total_bins = self.nbins
                         new_bin_coord_ix.append(coord_ix)
 
+
         return output
+
+    def check_distance(self, parent_ix, coords):
+        '''Check to ensure that the distance between the coordinates `coords`
+        and the parent_ix is less than the distance to any other center in the parent level'''
+        if parent_ix is None:
+            print '------------------------------'
+            print 'Adding coords at level 0'
+            print coords
+            print '------------------------------'
+
+            return True
+
+        try:
+            passed_coord_dtype = coords.dtype
+        except AttributeError:
+            coords = np.require(coords, dtype=coord_dtype)
+        else:
+            if passed_coord_dtype != coord_dtype:
+                coords = np.require(coords, dtype=coord_dtype)
+
+        coords = coords.reshape((1, -1))
+
+        assert len(coords) == 1
+        parent_level = self.bin_graph.node[parent_ix]['level']
+        level_indices = self.level_indices[parent_level]
+        parent_centers = self.fetch_centers(level_indices)
+
+        mask = np.ones((1,), dtype=np.bool_)
+        output = np.empty((1,), dtype=index_dtype)
+        min_dist = np.empty((1,), dtype=coord_dtype)
+        self._assign_level(coords, parent_centers, mask, output, min_dist)
+
+        res = output[0] == level_indices.index(parent_ix)
+
+        print '------------------------------'
+        print 'Parent level: ', parent_level
+        print 'Parent index: ', parent_ix
+        print 'mindist: ', min_dist[0]
+        print 'mindist index match: ', res
+        print coords
+        print '------'
+        print parent_centers
+        print '------'
+        print output[0]
+        print level_indices.index(parent_ix)
+        print '------------------------------'
+
+        return res
 
     def add_bin(self, parent, center_ix):
         '''Add a bin that subdivides the bin `parent`, where `parent` is a 
-        networkx Node. 
+        node index. 
         If `parent`is None, then it is assumed that this bin is at the top of the bin
         hiearchy. The `center_ix` argument defines an association of 
         coordinate data with the bin. 
