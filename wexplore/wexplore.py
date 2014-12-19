@@ -5,6 +5,7 @@ import heapq
 import cPickle as pickle
 import hashlib
 import logging
+import itertools
 
 from westpa.binning.assign import BinMapper
 from wex_utils import apply_down_argmin_across, argmin_exceed_threshold
@@ -119,6 +120,41 @@ class WExploreBinMapper(BinMapper):
 
         return observed_nodes
 
+    def _prune_violations(self):
+        '''Remove any nodes and their sucessors that would no longer be mapped to 
+        the same parent'''
+        G = self.bin_graph
+        nodes_remove = []
+
+        for li, level_indices in enumerate(self.level_indices):
+            if li == 0:
+                continue
+
+            prev_level_nodes = self.level_indices[li - 1]
+            pcenters = self.fetch_centers(prev_level_nodes)
+
+            centers = self.fetch_centers(level_indices)
+            ncenters = len(centers)
+
+            parent_nodes = [G.predecessors(ix)[0] for ix in level_indices]
+
+            mask = np.ones((ncenters,), dtype=np.bool_)
+            output = np.empty((ncenters,), dtype=index_dtype)
+            min_dist = np.empty((ncenters,), dtype=coord_dtype)
+
+            self._assign_level(centers, pcenters, mask, output, min_dist)
+
+            for k in xrange(ncenters):
+                if output[k] != prev_level_nodes.index(parent_nodes[k]):
+                    nix = level_indices[k]
+                    succ = nx.algorithms.traversal.dfs_successors(G, nix).values()
+                    nodes_remove.extend(list(itertools.chain.from_iterable(succ)) + [nix])
+
+        if len(nodes_remove):
+            G.remove_nodes_from(nodes_remove)
+            for k in xrange(self.n_levels):
+                self.level_indices[k] = [nix for nix in self.level_indices[k] if nix not in nodes_remove]
+
     def assign(self, coords, mask=None, output=None, add_bins=False):
         '''Hierarchically assign coordinates to bins'''
         try:
@@ -219,11 +255,6 @@ class WExploreBinMapper(BinMapper):
                 parent_ix = new_bin[1]
                 coord_ix = new_bin[2]
 
-                # Check to make sure a previously adding a bin
-                # in this round does not violate a distance constraint
-                if not self.check_distance(parent_ix, coords[coord_ix]):
-                    continue
-
                 if coord_ix not in new_bin_coord_ix:
                     # Attempt to add new bin
                     cix = len(self.centers)
@@ -235,6 +266,8 @@ class WExploreBinMapper(BinMapper):
                         total_bins = self.nbins
                         new_bin_coord_ix.append(coord_ix)
 
+            self._prune_violations()
+
 
         return output
 
@@ -242,11 +275,6 @@ class WExploreBinMapper(BinMapper):
         '''Check to ensure that the distance between the coordinates `coords`
         and the parent_ix is less than the distance to any other center in the parent level'''
         if parent_ix is None:
-            print '------------------------------'
-            print 'Adding coords at level 0'
-            print coords
-            print '------------------------------'
-
             return True
 
         try:
@@ -270,19 +298,6 @@ class WExploreBinMapper(BinMapper):
         self._assign_level(coords, parent_centers, mask, output, min_dist)
 
         res = output[0] == level_indices.index(parent_ix)
-
-        print '------------------------------'
-        print 'Parent level: ', parent_level
-        print 'Parent index: ', parent_ix
-        print 'mindist: ', min_dist[0]
-        print 'mindist index match: ', res
-        print coords
-        print '------'
-        print parent_centers
-        print '------'
-        print output[0]
-        print level_indices.index(parent_ix)
-        print '------------------------------'
 
         return res
 
